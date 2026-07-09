@@ -1,6 +1,9 @@
+use std::fmt::Alignment::Left;
 use std::fs::{OpenOptions};
 use std::io::Write;
+use std::process::exit;
 
+#[derive(PartialEq)]
 pub enum LogLevel {
     Info,
     Warn,
@@ -8,24 +11,57 @@ pub enum LogLevel {
     Error
 }
 
-// need to signal if this fails to communicate with the server of the failure 
-pub async fn log(level: LogLevel, message: &str) {
-    let mut log_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("./client.log")
-        .unwrap();
+pub static LOG_FILEPATH: &'static str = "./client.log";
 
-    let level = match level {
-        LogLevel::Info  => "INFO",
-        LogLevel::Warn  => "WARN",
-        LogLevel::Error => "ERROR",
-        LogLevel::Debug => "DEBUG"
-    };
+#[macro_export]
+macro_rules! log {
+    ($level:expr, $fmt:literal $(, $args:expr)* ) => {{
+        log!(@inner $level, None::<i32>, $fmt $(, $args)*)
+    }};
+    ($level:expr, $fmt:literal $(, $args:expr)* ; $code:expr) => {{
+        log!(@inner $level, Some($code), $fmt $(, $args)*)
+    }};
+    (@inner $level:expr, $code:expr, $fmt:literal $(, $args:expr)* ) => {{
+        use std::io::Write;
 
-    let dt = chrono::Local::now().to_rfc3339();    
-    match log_file.write_all(format!("{} {}: {}", dt, level, message).as_bytes()) {
-        Ok(_) => (),
-        Err(e) => panic!("Unable to write to log file: {}", e)
+        let mut log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(LOG_FILEPATH)
+            .unwrap();
+
+        let level_str = match $level {
+            LogLevel::Info => "INFO",
+            LogLevel::Warn => "WARN",
+            LogLevel::Error => "ERROR",
+            LogLevel::Debug => "DEBUG",
+        };
+
+        let dt = chrono::Local::now().to_rfc3339();
+        let formatted = format!("{} {}: {}\n", dt, level_str, format!($fmt $(, $args)*));
+
+        log_file.write_all(formatted.as_bytes()).unwrap();
+
+        if matches!($level, LogLevel::Error) {
+            std::process::exit($code.unwrap_or(1));
+        }
+    }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_macro_test() -> () {
+
+        log!(LogLevel::Info, "{} {}", "hello", "world");
+        log!(LogLevel::Info, "{} {} & panick!!", "hello", "world"; 10);
+
+        let s = std::fs::read_to_string("./client.log").unwrap();
+        println!("{}", s);    
+    
     }
 }
+
+

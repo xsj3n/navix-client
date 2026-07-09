@@ -1,16 +1,30 @@
 use std::{net::TcpStream, sync::Arc};
 use rustls::{Stream, pki_types::ServerName};
 
+use crate::init::chk_if_managed;
+use crate::logging::*;
+
 pub mod init;
 pub mod net;
 pub mod logging;
 
 #[tokio::main]
 async fn main() {
+
+    let is_managed = chk_if_managed();
+
+    if is_managed.is_err() {
+        log!(LogLevel::Error, "Failure to check if machine is manged due to error - {}", is_managed.unwrap_err().to_string(); 250);
+    }
+
+    if is_managed.unwrap() != true {
+        // TODO: insert enrollment guidance flow
+    }  
+
     const HOST: &'static str  = "localhost";
     const PORT: u32     = 3000;
     
-    let root_store = rustls::RootCertStore::from_iter(
+    let root_store = rustls::RootCertStore ::from_iter(
         webpki_roots::TLS_SERVER_ROOTS.iter().cloned()
     );
 

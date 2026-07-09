@@ -1,11 +1,12 @@
-use std::fs::read;
+use std::fs::{read};
 use std::process::Command;
 use base64::Engine;
 use base64::engine::general_purpose;
 
+
+
 type HashingError = Box<dyn std::error::Error>;
 type FilePath = String;
-
 
 fn command_to_string(cmd: impl AsRef<str>) -> Result<String, Box<dyn std::error::Error>> {
     let split: Vec<&str> = cmd.as_ref().split(" ").collect();
@@ -28,44 +29,13 @@ fn command_to_string(cmd: impl AsRef<str>) -> Result<String, Box<dyn std::error:
 
 
 fn get_disk_serial() -> Result<Vec<u8>, HashingError> {
-    // let findmnt_output =  Command::new("findmnt")
-    //     .arg("-n")
-    //     .arg("-o")
-    //     .arg("SOURCE")
-    //     .arg("/")
-    //     .output()?
-    //     .stdout;
-
-    // if findmnt_output.len() == 0 {
-    //     return Err("findmnt returned 0 bytes".into());
-    // }
-
-    
-
-
     let root_disk = command_to_string("findmnt -n -o SOURCE /")
         .map_err(|e| format!("Failed to gather findmnt output: {}", e))?;
     
-    // let udevadm_output = Command::new("udevadm")
-    //     .arg("info")
-    //     .arg("--query=property")
-    //     .arg(format!("--name={}", root_disk.trim()))
-    //     .output()?
-    //     .stdout;
-
-    
-    
-    // if udevadm_output.len() == 0 {
-    //     return Err("udevadm returned less than 0 bytes".into());
-    // }
-
-    // let udevadm_ascii_output = String::from_utf8(udevadm_output)
-    //     .map_err(|e| format!("Error producing utf8 from findmnt output: {}", e))?;
 
     let udevadm_output = command_to_string(format!("udevadm info --query=property --name={}", root_disk.trim()))
         .map_err(|e| format!("Failed to gather udevadm output: {}", e))?;
 
-    println!("udevadm output: {}", udevadm_output);
 
     match udevadm_output.lines().find(|s| s.contains("ID_SERIAL_SHORT=")) {
         Some(s) => return Ok(s.split("=").last().unwrap().as_bytes().to_owned()),
@@ -120,8 +90,6 @@ fn get_mac_address() -> Result<Vec<u8>, HashingError> {
                 read(eth_nic_entry.path()).map_err(|e| format!("Failed to read derived ethernet NIC path {}: {}", eth_nic_entry.path().to_str().unwrap(), e))?
             )
     }
-    
-    
     
     return Err("MAC address conditionals unmet".into());
 }
@@ -225,17 +193,20 @@ impl MachineFingerprint {
 
 
 
-// pub fn chk_if_managed() -> Result<bool, Box<dyn std::error::Error>> {
-//     const CERT_DIR: &str = "./";
-
-
-//     let hostname = String::from_utf8(Command::new("hostname").output().map_err(|e| format!("hostname command failed: {}",e ))?.stdout)
-//         .map_err(||)
-//     if std::path::Path::()
+pub fn chk_if_managed() -> Result<bool, Box<dyn std::error::Error>> {
+ 
+    let hostname = command_to_string("hostname")?;
+    let cert_path = "./".to_string() + &hostname + ".cer";
+    if std::path::Path::new(&cert_path).exists() {
+        return Ok(true);
+    }
 
     
-//     return Ok(false);
-// }
+
+    return Ok(false);
+}
+
+
 
 
 #[cfg(test)]
@@ -246,7 +217,7 @@ mod tests {
     fn hardware_information() -> () {
         
         match MachineFingerprint::new() {
-            Ok(f) => println!("Hardware hash:\n{:#?}\n\n=",f),
+            Ok(f) => println!("Hardware hash:\n{:#?}\n\n=",f.hardware_fingerprint),
             Err(e) => {
                 println!("Collected hashing errors:");
                 e.into_iter().for_each(|error| println!("[!]: {}", error));
