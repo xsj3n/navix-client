@@ -7,14 +7,17 @@ use crate::logging::*;
 pub mod init;
 pub mod net;
 pub mod logging;
+pub mod util;
+pub mod state;
 
 #[tokio::main]
 async fn main() {
 
-    let is_managed = chk_if_managed();
+    let is_managed = chk_if_managed().await;
 
     if is_managed.is_err() {
         log!(LogLevel::Error, "Failure to check if machine is manged due to error - {}", is_managed.unwrap_err().to_string(); 250);
+        return // this return wont ever be reached but is required to make the compiler happy  
     }
 
     if is_managed.unwrap() != true {

@@ -1,7 +1,6 @@
-use std::fmt::Alignment::Left;
-use std::fs::{OpenOptions};
-use std::io::Write;
-use std::process::exit;
+// This logging module is intended to
+//   - 
+
 
 #[derive(PartialEq)]
 pub enum LogLevel {
@@ -27,12 +26,11 @@ macro_rules! log {
         let mut log_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(LOG_FILEPATH)
-            .unwrap();
+            .open(LOG_FILEPATH).unwrap();
 
         let level_str = match $level {
-            LogLevel::Info => "INFO",
-            LogLevel::Warn => "WARN",
+            LogLevel::Info  => "INFO",
+            LogLevel::Warn  => "WARN",
             LogLevel::Error => "ERROR",
             LogLevel::Debug => "DEBUG",
         };
@@ -43,10 +41,12 @@ macro_rules! log {
         log_file.write_all(formatted.as_bytes()).unwrap();
 
         if matches!($level, LogLevel::Error) {
-            std::process::exit($code.unwrap_or(1));
+            std::process::exit($code.unwrap());
         }
+        
     }};
 }
+
 
 #[cfg(test)]
 mod tests {

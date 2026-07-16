@@ -2,38 +2,19 @@ use std::fs::{read};
 use std::process::Command;
 use base64::Engine;
 use base64::engine::general_purpose;
-
+use crate::util::command_to_string;
 
 
 type HashingError = Box<dyn std::error::Error>;
 type FilePath = String;
 
-fn command_to_string(cmd: impl AsRef<str>) -> Result<String, Box<dyn std::error::Error>> {
-    let split: Vec<&str> = cmd.as_ref().split(" ").collect();
-    let mut cmd_obj =  Command::new(split[0]);
-    split.iter().for_each(|s|{
-        if split[0] != *s {
-            cmd_obj.arg(s);
-        }
-    });
-    
-    let output = cmd_obj.output()?.stdout;
-    if output.len() == 0 {
-        return Err(format!("{} returned 0 bytes", split[0]).into());
-    }
-    return Ok(
-        String::from_utf8(output)?
-    );
-    
-}
 
-
-fn get_disk_serial() -> Result<Vec<u8>, HashingError> {
-    let root_disk = command_to_string("findmnt -n -o SOURCE /")
+async fn get_disk_serial() -> Result<Vec<u8>, HashingError> {
+    let root_disk = command_to_string("findmnt -n -o SOURCE /").await
         .map_err(|e| format!("Failed to gather findmnt output: {}", e))?;
     
 
-    let udevadm_output = command_to_string(format!("udevadm info --query=property --name={}", root_disk.trim()))
+    let udevadm_output = command_to_string(format!("udevadm info --query=property --name={}", root_disk.trim())).await
         .map_err(|e| format!("Failed to gather udevadm output: {}", e))?;
 
 
@@ -44,7 +25,7 @@ fn get_disk_serial() -> Result<Vec<u8>, HashingError> {
 }
 
 
-fn get_tpm_pub_ek(out_dir: FilePath) -> Result<Vec<u8>, HashingError> {
+async fn get_tpm_pub_ek(out_dir: FilePath) -> Result<Vec<u8>, HashingError> {
     let ek_pub_path = out_dir.clone() + "ek.pub";
     let tpm2_createek_status = Command::new("tpm2_createek")
         .arg("-G")
@@ -70,7 +51,7 @@ fn get_tpm_pub_ek(out_dir: FilePath) -> Result<Vec<u8>, HashingError> {
 
 // there may be edge cases where a machine had more than one pcie nic slot but
 // we will keep it simple for now 
-fn get_mac_address() -> Result<Vec<u8>, HashingError> {
+async fn get_mac_address() -> Result<Vec<u8>, HashingError> {
 
     // we want to get all NIC MACS 
     let linked_paths: std::fs::ReadDir = std::fs::read_dir("/sys/class/net")?;
@@ -94,42 +75,42 @@ fn get_mac_address() -> Result<Vec<u8>, HashingError> {
     return Err("MAC address conditionals unmet".into());
 }
 
-fn get_board_serial() -> Result<Vec<u8>, HashingError> {
+async fn get_board_serial() -> Result<Vec<u8>, HashingError> {
     return Ok(
         read("/sys/class/dmi/id/board_serial")
             .map_err(|e| format!("Error reading board_serial: {}", e))?
     );
 }
 
-fn get_tpm_version() -> Result<Vec<u8>, HashingError> {
+async fn get_tpm_version() -> Result<Vec<u8>, HashingError> {
     return Ok(
         read("/sys/class/tpm/tpm0/tpm_version_major")
             .map_err(|e| format!("Error reading tpm_version_major: {}", e))?
     ); 
 }
 
-fn get_product_family() -> Result<Vec<u8>, HashingError> {
+async fn get_product_family() -> Result<Vec<u8>, HashingError> {
     return Ok(
         read("/sys/class/dmi/id/product_family")
             .map_err(|e| format!("Error reading product_family: {}", e))?
     );
 }
 
-fn get_manufacturer() -> Result<Vec<u8>, HashingError> {
+async fn get_manufacturer() -> Result<Vec<u8>, HashingError> {
     return Ok(
         read("/sys/class/dmi/id/bios_vendor")
             .map_err(|e| format!("Error reading bios_vendor: {}", e))?
     );
 }
 
-fn get_product_name() -> Result<Vec<u8>,  HashingError> {
+async fn get_product_name() -> Result<Vec<u8>,  HashingError> {
     return Ok(
         read("/sys/class/dmi/id/product_name")
             .map_err(|e| format!("Error reading product_name: {}", e))?
     );
 }
 
-fn get_bios_uuid() -> Result<Vec<u8>,  HashingError> {
+async fn get_bios_uuid() -> Result<Vec<u8>,  HashingError> {
     return Ok(
         read("/sys/class/dmi/id/product_uuid")
             .map_err(|e| format!("Error reading product_uuid: {}", e))?
@@ -151,9 +132,19 @@ pub struct MachineFingerprint {
 }
 
 impl MachineFingerprint {
-    pub fn new() -> Result<Self, Vec<HashingError>> {
+    pub async fn new() -> Result<Self, Vec<HashingError>> {
         let out_dir = "./".to_string();
-        let results = vec![
+        let (
+            board_serial,
+            disk_serial,
+            tpm_pub_ek,
+            tpm_version,
+            mac_addr,
+            product_family,
+            manufacturer,
+            product_name,
+            bios_uuid
+        ) = tokio::join! ( 
             get_board_serial(),
             get_disk_serial(),
             get_tpm_pub_ek(out_dir),
@@ -163,7 +154,19 @@ impl MachineFingerprint {
             get_manufacturer(),
             get_product_name(),
             get_bios_uuid()
-        ];
+        );
+
+        let results = vec![
+            board_serial,
+            disk_serial,
+            tpm_pub_ek,
+            tpm_version,
+            mac_addr,
+            product_family,
+            manufacturer,
+            product_name,
+            bios_uuid
+        ];      
 
         // collecting errors makes things easier down the line
         if results.iter().any(|r| r.is_err()) {
@@ -193,9 +196,9 @@ impl MachineFingerprint {
 
 
 
-pub fn chk_if_managed() -> Result<bool, Box<dyn std::error::Error>> {
+pub async fn chk_if_managed() -> Result<bool, Box<dyn std::error::Error>> {
  
-    let hostname = command_to_string("hostname")?;
+    let hostname = command_to_string("hostname").await?;
     let cert_path = "./".to_string() + &hostname + ".cer";
     if std::path::Path::new(&cert_path).exists() {
         return Ok(true);
@@ -213,10 +216,10 @@ pub fn chk_if_managed() -> Result<bool, Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn hardware_information() -> () {
+    #[tokio::test]
+    async fn hardware_information() -> () {
         
-        match MachineFingerprint::new() {
+        match MachineFingerprint::new().await {
             Ok(f) => println!("Hardware hash:\n{:#?}\n\n=",f.hardware_fingerprint),
             Err(e) => {
                 println!("Collected hashing errors:");
