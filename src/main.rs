@@ -1,8 +1,12 @@
+use std::time::Duration;
 use std::{net::TcpStream, sync::Arc};
+use cargo::sources::git::fetch::Error;
 use rustls::{Stream, pki_types::ServerName};
+use tokio::time::sleep;
 
 use crate::init::chk_if_managed;
 use crate::logging::*;
+use crate::net::{Poll, PollResponse, Server};
 
 pub mod init;
 pub mod net;
@@ -10,41 +14,71 @@ pub mod logging;
 pub mod util;
 pub mod state;
 
+type PollResponseResult = Result<PollResponse, std::io::Error>;
+
+// TODO: devise certain methods annd actions which will trigger a pull 
+
 #[tokio::main]
 async fn main() {
+    let mut server = Server::new("localhost", 8080, None); 
+    
+    let is_managed = match chk_if_managed().await {
+        Ok(b) => b,
+        Err(e) => {
+            log!(LogLevel::Error, "Failure to check if machine is manged due to error - {}", e.to_string(); 250);
+            return; // this return wont ever be reached but is required to make the compiler happy  
+        }
+    };
 
-    let is_managed = chk_if_managed().await;
-
-    if is_managed.is_err() {
-        log!(LogLevel::Error, "Failure to check if machine is manged due to error - {}", is_managed.unwrap_err().to_string(); 250);
-        return // this return wont ever be reached but is required to make the compiler happy  
+    if !is_managed {
+        log!(LogLevel::Error, "{}", "This machine is not managed. Use navix-enroll to enroll the machine."; 251);
+        return;
     }
 
-    if is_managed.unwrap() != true {
-        // TODO: insert enrollment guidance flow
-    }  
 
-    const HOST: &'static str  = "localhost";
-    const PORT: u32     = 3000;
-    
-    let root_store = rustls::RootCertStore ::from_iter(
-        webpki_roots::TLS_SERVER_ROOTS.iter().cloned()
-    );
+    loop {
+        let response_result: PollResponseResult = server.request::<Poll, PollResponse>(Poll::new());
+        if response_result.is_err() {
+            log!(LogLevel::Warn, "Unable to poll the managment server - {}", response_result.unwrap_err().to_string());
+            sleep(Duration::from_hours(1)).await;
+            continue;
+        }
 
-    let config = rustls::ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
+        let poll_response = response_result.unwrap();
 
-
-    let rc_config = Arc::new(config);
-    let mgmt_server = ServerName::try_from("localhost").expect("[!] Invalid DNS name"); 
-    let mut conn = rustls::ClientConnection::new(rc_config, mgmt_server).expect("[!] Failed to initalize TLS state");
         
-    
-    let mut tcp = TcpStream::connect(format!("{HOST}:{PORT}")).expect("[!] Failed to establish connection");
-    let mut tls = Stream::new(&mut conn, &mut tcp);
+        sleep(Duration::from_hours(1)).await;
+    }
+}
 
 
-    let mut response_buffer = Vec::<u8>::new();
+
+
+fn handle_poll_response(response: PollResponse) -> Result<(), Box<dyn std::error::Error>> {
     
+    if response.wipe {
+        // TODO: implement wipe functionality 
+    }
+
+    if response.rebuild {
+        // TODO: implement rebuild functionality
+    }
+
+    if response.script {
+        // TODO: implement script runner 
+    }
+
+    if response.rotate_root_pwd {
+        // TODO: implement root password rotation 
+    }
+
+    if response.rotate_luks {
+        // TODO: implement luks & the rotation of the keys
+    }
+
+    if response.malware_scan {
+        // TODO: implement a generic scanner depending upon what administrators install 
+    }
+
+    return Ok(());
 }

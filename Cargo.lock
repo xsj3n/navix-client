@@ -3052,6 +3052,7 @@ dependencies = [
  "chrono",
  "rustls",
  "serde",
+ "serde_json",
  "tokio",
  "webpki-roots",
  "zbus",

@@ -7,6 +7,7 @@ use crate::util::command_to_string;
 
 type HashingError = Box<dyn std::error::Error>;
 type FilePath = String;
+pub type HardwareFingerprint = String;
 
 
 async fn get_disk_serial() -> Result<Vec<u8>, HashingError> {
