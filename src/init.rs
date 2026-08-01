@@ -11,11 +11,11 @@ pub type HardwareFingerprint = String;
 
 
 async fn get_disk_serial() -> Result<Vec<u8>, HashingError> {
-    let root_disk = command_to_string("findmnt -n -o SOURCE /").await
+    let root_disk = command_to_string("findmnt -n -o SOURCE /", false).await
         .map_err(|e| format!("Failed to gather findmnt output: {}", e))?;
     
 
-    let udevadm_output = command_to_string(format!("udevadm info --query=property --name={}", root_disk.trim())).await
+    let udevadm_output = command_to_string(format!("udevadm info --query=property --name={}", root_disk.trim()), false).await
         .map_err(|e| format!("Failed to gather udevadm output: {}", e))?;
 
 
@@ -199,7 +199,7 @@ impl MachineFingerprint {
 
 pub async fn chk_if_managed() -> Result<bool, Box<dyn std::error::Error>> {
  
-    let hostname = command_to_string("hostname").await?;
+    let hostname = command_to_string("hostname", false).await?;
     let cert_path = "./".to_string() + &hostname + ".cer";
     if std::path::Path::new(&cert_path).exists() {
         return Ok(true);

@@ -1,15 +1,11 @@
-use std::{io::{ErrorKind, Error, Read, Write}, net::TcpStream, sync::Arc};
-use base64::engine::DecodePaddingMode::RequireCanonical;
+use std::{io::{Error, ErrorKind, Read, Write}, net::TcpStream, str::from_utf8, sync::Arc};
 use rustls::{ClientConnection, StreamOwned, pki_types::ServerName};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use crate::{state::*, util::subslice_contains};
+use crate::{state::*};
 use crate::init::{HardwareFingerprint};
 
-type NetworkOk = Result<(), Error>;
-type NetworkIO = Result<usize, Error>;
 
-// TODO: Move to protobuf eventually 
-
+// TODO: Move to protobuf eventually, probably. kinda lazy, serde is ez & will work for now 
 // Registration struct stuff ===
 
 #[derive(Serialize)]
@@ -31,7 +27,7 @@ impl Registration {
 // Poll struct stuff ===
 
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct PollResponse {
     pub wipe: bool,
     pub rebuild: bool,
@@ -76,101 +72,92 @@ impl Poll {
 
 // ===
 
-
-
-pub struct Server {
-    hostname: String,
-    port: u32,
-    tls_state: Option<ClientConnection>,
-    tls_stream: Option<StreamOwned<ClientConnection, TcpStream>>
+fn get_root_store() -> rustls::RootCertStore {
+    return rustls::RootCertStore::from_iter(
+        webpki_roots::TLS_SERVER_ROOTS.iter().cloned()
+    );
 }
 
-impl Server {
-    pub fn new(hostname: impl AsRef<str>, port: u32, state: Option<ClientConnection>) -> Self {
-        return Self {
-            hostname: hostname.as_ref().to_string(),
-            port: port,
-            tls_state: state,
-            tls_stream: None
+fn default_tls_cfg() -> Arc<rustls::ClientConfig> {
+    return Arc::new(rustls::ClientConfig::builder()
+        .with_root_certificates(get_root_store())
+        .with_no_client_auth());
+}
+
+fn default_state(hostname: impl AsRef<str>) -> Result<ClientConnection, Error> {
+    let server = match ServerName::try_from(hostname.as_ref()) {
+        Ok(s) => s,
+        Err(_) => return Err(Error::new(ErrorKind::Other, "Invalid DNS name or IP address"))
+    };
+
+    return Ok(
+        match ClientConnection::new(default_tls_cfg(), server.to_owned()) {
+            Ok(c) => c,
+            Err(e) => return Err(Error::new(ErrorKind::Other, e.to_string()))
         }
-    }
+    );
+}
 
-    fn get_root_store(&self) -> rustls::RootCertStore {
-        return rustls::RootCertStore::from_iter(
-            webpki_roots::TLS_SERVER_ROOTS.iter().cloned()
-        );
-    }
-    
-
-    fn addr(&self) -> String {
-        return format!("{}:{}", self.hostname, self.port);
-    }
-
-    fn default_tls_cfg(&self) -> Arc<rustls::ClientConfig> {
-        return Arc::new(rustls::ClientConfig::builder()
-            .with_root_certificates(self.get_root_store())
-            .with_no_client_auth());
-    }
-    
-    fn default_state(&self) -> Result<ClientConnection, Error> {
-        let server = match ServerName::try_from(self.hostname.as_str()) {
-            Ok(s) => s,
-            Err(_) => return Err(Error::new(ErrorKind::Other, "Invalid DNS name or IP address"))
-        };
-        
-        return Ok(
-            match ClientConnection::new(self.default_tls_cfg(), server.to_owned()) {
-                Ok(c) => c,
-                Err(e) => return Err(Error::new(ErrorKind::Other, e.to_string()))
-            }
-        );
-    }
-
-    fn connect(&mut self) -> NetworkOk {
-        let tcp_stream = TcpStream::connect(self.addr())?;
-        let tls_state = self.tls_state.take().unwrap_or(self.default_state()?);
-        self.tls_stream = Some(StreamOwned::new(tls_state, tcp_stream));
-        return Ok(());
-    }
-
-    fn _write(&mut self, buf: &[u8]) -> NetworkIO {
-        match self.tls_stream.as_mut() {
-            None => return Err(Error::new(ErrorKind::Other, "No TLS stream has been connected")),
-            Some(s) => return Ok(s.write(buf)?)
-        }
-    }
-
-    fn read(&mut self, buf: &mut [u8]) -> NetworkIO {
-        match self.tls_stream.as_mut() {
-            None => return Err(Error::new(ErrorKind::Other, "No TLS stream has been connected")),
-            Some(s) => return Ok(s.read(buf)?)
-        }
-    }
-
-    fn write_all(&mut self, buf: &[u8]) -> NetworkOk {
-        match self.tls_stream.as_mut() {
-            None => return Err(Error::new(ErrorKind::Other, "No TLS stream has been connected")),
-            Some(s) => {
-                s.write_all(buf)?;
-                s.flush()?;
-                return Ok(());
+// returns first instance found 
+fn subslice_contains<T: PartialEq>(slice: &[T], target: &[T]) -> bool {
+    for i in 0..slice.len() {
+        if slice[i] == target[0] {
+            for j in 1..target.len() {
+                if slice[i + j] != target[j] { break; }
+                if slice[i + j] == target[j] && j == target.len() - 1 { return true; }
             }
         }
     }
+    return false;
+} 
 
 
-    fn close(&mut self) -> NetworkOk {
-        match self.tls_stream.as_mut() {
-            None => return Err(Error::new(ErrorKind::Other, "No TLS stream has been connected")),
-            Some(s) => {
-                s.sock.shutdown(std::net::Shutdown::Both)?;
-                self.tls_stream = None;
-                return Ok(());
-            }, 
+// trait for IO actions that need to be performed on the duplex 
+pub trait IOStream: Read + Write {
+    fn close(&mut self) -> Result<(), Error>;
+    fn connect(addr: impl AsRef<str>) -> Result<Self, Error> where Self: Sized;
+}
+
+
+impl IOStream for std::net::TcpStream {
+    fn close(&mut self) -> Result<(), Error> {
+        match self.shutdown(std::net::Shutdown::Both) {
+            Ok(_) => return Ok(()),
+            Err(e) => match e.kind() {
+                ErrorKind::Interrupted => return Ok(()),
+                _ => return Err(e)
+            }
+
         }
+    }    
+
+   fn connect(addr: impl AsRef<str>) -> Result<Self, Error> {
+       return TcpStream::connect(addr.as_ref());
+   }
+}
+
+
+
+struct TLSStream<S: IOStream>(StreamOwned<ClientConnection, S>);
+
+impl<S: IOStream> Read for TLSStream<S> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        return self.0.read(buf);
+    }
+}
+
+impl<S: IOStream> Write for TLSStream<S> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        return self.0.write(buf);
     }
 
-    fn read_until_delimiter(&mut self, buf: &mut [u8]) -> NetworkIO {
+    fn flush(&mut self) -> std::io::Result<()> {
+        return self.0.flush();
+    }
+} 
+
+impl<S: IOStream> TLSStream<S> {
+    fn read_until_delimiter(&mut self, buf: &mut [u8], delimiter: &[u8]) -> Result<usize, Error> {
         let mut loops = 0;
         let mut len = 0;
         loop {
@@ -189,48 +176,152 @@ impl Server {
                 }
             };
 
-            if subslice_contains(&buf, b"\r\n\r\n") { return Ok(len); }
+            if subslice_contains(&buf, &delimiter) { return Ok(len); }
         }
     }
 
+}
 
 
-    pub fn request<T: Serialize, RT: DeserializeOwned>(&mut self, request: T) -> Result<RT, Error> {
-        let json = serde_json::to_vec(&request)?;
-        let mut response_buffer = Vec::<u8>::new();
-        let delimiter = b"\r\n\r\n";
+pub struct Server<S: IOStream> {
+    pub hostname: String,
+    pub port: u32,
+    tls_state: Option<ClientConnection>,
+    tls_stream: Option<TLSStream<S>>
+}
 
-        self.connect()?;    
-        self.write_all(&json)?;
-        self.write_all(delimiter)?;
-        self.read_until_delimiter(&mut response_buffer)?;
-        loop {
-
-                      
-            match self.read(&mut response_buffer) {
-                Ok(len)  =>  {
-                    if len < target_len + 4 { // account for delimiter 
-                        continue;
-                    }
-
-                    _ = self.close();
-                    return Ok(serde_json::from_slice::<RT>(&response_buffer)?);
-                }
+impl<S: IOStream> Server<S> {
+    pub fn new(hostname: impl AsRef<str> + Clone, port: u32, mut state: Option<ClientConnection>) -> Result<Self, Error> {
+        if state.is_none() {
+            state = Some(default_state(hostname.clone())?);
+        }
         
-                Err(e) => {
-                    match e.kind() {
-                        ErrorKind::Interrupted => continue,
-                        _                      => return Err(e)
-                    }
-                }
-            }
-        } 
+        return Ok(Self {
+            hostname: hostname.as_ref().to_string(),
+            port: port,
+            tls_state: state,
+            tls_stream: None
+        });
+    }
+
+
+    fn addr(&self) -> String {
+        return format!("{}:{}", self.hostname, self.port);
+    }
+
+    fn init_connection(&mut self, stream: S) -> () {
+        self.tls_stream = Some(TLSStream(StreamOwned::new(self.tls_state.take().unwrap(), stream)));
     }
     
 
-     
+    pub fn request<T: Serialize, RT: DeserializeOwned>(&mut self, request: T) -> Result<RT, Error> {
+        if self.tls_stream.is_none() {
+            let stream = S::connect(self.addr())?;
+            self.init_connection(stream);  
+        }
+
+        let json = serde_json::to_vec(&request)?;
+        let mut response_buffer = [0u8; 4096];
+        let delimiter = b"\r\n\r\n";
+        let mut tls_stream = self.tls_stream.take().unwrap();
+
+        tls_stream.write_all(&json)?;
+        tls_stream.write_all(delimiter)?;
+        tls_stream.flush()?;
+        let recv_len = tls_stream.read_until_delimiter(&mut response_buffer, delimiter)?;
+        return Ok(serde_json::from_slice::<RT>(&response_buffer[..recv_len - 4])?);
+    }
+
+}
+
+// a bunch of scaffolding for the sake of testing but its kinda whatever
+// ill probably just end up reusing this in another crate 
+
+      
+
+
+#[cfg(test)]
+mod tests {
+use rustls_pki_types::CertificateDer;
+use rustls::ServerConnection;
+use std::os::unix::net::UnixStream;
+use super::*;
+
+#[cfg(test)] 
+impl IOStream for UnixStream {
+    fn connect(addr: impl AsRef<str>) -> Result<Self, Error> where Self: Sized {
+        return Ok(UnixStream::connect(addr.as_ref()).unwrap());
+    }
+
+    fn close(&mut self) -> Result<(), Error> {
+        self.shutdown(std::net::Shutdown::Both).unwrap();
+        return Ok(());
+    }
+}
+
+
+#[cfg(test)]
+fn test_server_tls_cfg() -> (rustls::ServerConfig, CertificateDer<'static>) {
+    let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    return (rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.der().clone()], signing_key.serialize_der().try_into().unwrap()).unwrap(), cert.der().clone());
+}
+
+#[cfg(test)]
+fn test_client_tls_cfg(server_cert_der: rustls_pki_types::CertificateDer) -> rustls::ClientConfig {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(server_cert_der).unwrap();
+
+    rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth()
+}
+
+#[test]
+fn subslice_contains_test() {
+    let delimiter = b"\r\n\r\n".to_vec();
+    let example = PollResponse::new(); 
+    let mut data = serde_json::to_vec(&example).unwrap();
+    data.append(&mut delimiter.clone());
+    let data2 = b"foo bar\r\n\rfoo bar";
+    assert!(subslice_contains(&data,&delimiter));
+    assert!(!subslice_contains(data2,&delimiter))
+}
+
+
+#[test]
+fn read_across_multiple_writes() {
+    let (server_socket, client_socket) = UnixStream::pair().unwrap();
+    let (server_config, server_cert) = test_server_tls_cfg();
+    let client_config                = test_client_tls_cfg(server_cert);
+
+    let state = ClientConnection::new(Arc::new(client_config), ServerName::try_from("localhost").unwrap()).unwrap();
+    let server_state = ServerConnection::new(Arc::new(server_config)).unwrap();
+    
+    let task = std::thread::spawn(move || {
+        let mut tls_stream = rustls::StreamOwned::new(server_state, server_socket);
+        let mut buf = [0u8; 4096];
+        tls_stream.read(&mut buf).unwrap();
+        let poll_resp = PollResponse::new();
+        let json = serde_json::to_vec(&poll_resp).unwrap();
+        tls_stream.write(&json).unwrap();
+        tls_stream.write(b"\r\n\r\n").unwrap();
+        tls_stream.flush().unwrap();
+    });
+
+    let task2 = std::thread::spawn(move || {    
+        let mut server = Server::<UnixStream>::new("localhost", 0, Some(state)).unwrap();
+        server.init_connection(client_socket);        
+        let _: PollResponse = server.request(Poll::new()).unwrap();
+    });
+
+    task.join().unwrap();
+    task2.join().unwrap();
     
 }
+}
+
 
 
 

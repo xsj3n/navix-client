@@ -20,7 +20,13 @@ type PollResponseResult = Result<PollResponse, std::io::Error>;
 
 #[tokio::main]
 async fn main() {
-    let mut server = Server::new("localhost", 8080, None); 
+    let mut server = match Server::<TcpStream>::new("localhost", 8080, None) {
+         Ok(s)  => s,
+         Err(e) => {
+             log!(LogLevel::Error, "Error connecting to server - {}", e.to_string(); 101);
+             return;
+         } 
+    };
     
     let is_managed = match chk_if_managed().await {
         Ok(b) => b,
@@ -44,9 +50,11 @@ async fn main() {
             continue;
         }
 
-        let poll_response = response_result.unwrap();
+        match handle_poll_response(response_result.unwrap()) {
+            Ok(_) => (),
+            Err(e) => ()
+        };
 
-        
         sleep(Duration::from_hours(1)).await;
     }
 }

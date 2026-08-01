@@ -51,15 +51,16 @@ macro_rules! log {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn log_macro_test() -> () {
-
+    use crate::util::command_to_string;
+    #[tokio::test]
+    async fn log_macro_test() -> () {
+        let path = "./client.log";
         log!(LogLevel::Info, "{} {}", "hello", "world");
         log!(LogLevel::Info, "{} {} & panick!!", "hello", "world"; 10);
 
-        let s = std::fs::read_to_string("./client.log").unwrap();
-        println!("{}", s);    
+        let s = std::fs::read_to_string(path).unwrap();
+        println!("{}", s);
+        command_to_string(format!("rm {}", path), true).await.unwrap();
     
     }
 }
